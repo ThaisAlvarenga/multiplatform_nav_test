@@ -76,3 +76,24 @@ boxes.add(createMesh(boxGeometry, material, -2.5, 3, 0, 'Box C', 0));
 scene.add(boxes);
 
 animate();
+
+const raycaster = new THREE.Raycaster();
+
+document.addEventListener('mousedown', onMouseDown);
+
+function onMouseDown(event) {
+  const coords = new THREE.Vector2(
+    (event.clientX / renderer.domElement.clientWidth) * 2 - 1,
+    -((event.clientY / renderer.domElement.clientHeight) * 2 - 1),
+  );
+
+  raycaster.setFromCamera(coords, camera);
+
+  const intersections = raycaster.intersectObjects(scene.children, true);
+  if (intersections.length > 0) {
+    const selectedObject = intersections[0].object;
+    const color = new THREE.Color(Math.random(), Math.random(), Math.random());
+    selectedObject.material.color = color;
+    console.log(`${selectedObject.name} was clicked!`);
+  }
+}
