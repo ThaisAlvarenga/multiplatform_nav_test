@@ -1,14 +1,10 @@
-// XR OrbitControls-style navigation
+// --- imports (CDN-safe if needed) ---
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRButton } from 'three/addons/webxr/XRButton.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
-import { VRButton } from 'https://unpkg.com/three@0.165.0/examples/jsm/webxr/VRButton.js';
 
-
-// ------------------------------------
-// renderer / scene / camera
-// ------------------------------------
+// --- renderer / scene / camera ---
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setClearColor(0x222230);
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -18,20 +14,23 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 
-// lights
-const light = new THREE.DirectionalLight();
-light.intensity = 2;
-light.position.set(2, 5, 10);
+const light = new THREE.DirectionalLight(0xffffff, 2);
+light.position.set(2,5,10);
 light.castShadow = true;
-scene.add(light);
-scene.add(new THREE.AmbientLight(0xffffff, 0.1));
+scene.add(light, new THREE.AmbientLight(0xffffff, 0.1));
 
-// camera + desktop OrbitControls
-const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
+
+// === RIG (critical for XR) ===
+const rig = new THREE.Group();
+scene.add(rig);
+rig.add(camera); // head-tracked camera lives inside the rig
+
+// Desktop controls (disabled while in XR)
 const controls = new OrbitControls(camera, renderer.domElement);
-camera.position.set(-5, 5, 12);
-camera.layers.enable(1);
+controls.enableDamping = true;
 controls.target.set(-1, 2, 0);
+camera.position.set(-5, 5, 12);
 controls.update();
 
 // XR button
@@ -40,253 +39,195 @@ document.body.appendChild(XRButton.createButton(renderer, {
   optionalFeatures: ['hand-tracking']
 }));
 
-// ------------------------------------
-// World geometry (your sample objects)
-// ------------------------------------
+// ---------- your world ----------
 const floorGeometry = new THREE.PlaneGeometry(25, 20);
-const boxGeometry = new THREE.BoxGeometry(2, 2, 2);
-const cylinderGeometry = new THREE.CylinderGeometry(0.5, 0.5, 2);
-const material = new THREE.MeshLambertMaterial();
-
 const floorMesh = new THREE.Mesh(
-  floorGeometry,
-  new THREE.MeshLambertMaterial({ color: 0xffffff })
+  floorGeometry, new THREE.MeshLambertMaterial({ color: 0xffffff })
 );
-floorMesh.rotation.x = -Math.PI / 2.0;
-floorMesh.name = 'Floor';
+floorMesh.rotation.x = -Math.PI/2;
 floorMesh.receiveShadow = true;
 scene.add(floorMesh);
 
-function createMesh(geometry, material, x, y, z, name, layer) {
-  const mesh = new THREE.Mesh(geometry, material.clone());
-  mesh.position.set(x, y, z);
-  mesh.name = name;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.layers.set(layer);
-  return mesh;
-}
+const boxGeometry = new THREE.BoxGeometry(2,2,2);
+const cylinderGeometry = new THREE.CylinderGeometry(0.5,0.5,2);
+const baseMat = new THREE.MeshLambertMaterial();
 
+function createMesh(geometry, material, x, y, z, name, layer) {
+  const m = new THREE.Mesh(geometry, material.clone());
+  m.position.set(x,y,z);
+  m.name = name;
+  m.castShadow = m.receiveShadow = true;
+  m.layers.set(layer);
+  return m;
+}
 const cylinders = new THREE.Group();
-cylinders.add(createMesh(cylinderGeometry, material, 3, 1, 0, 'Cylinder A', 0));
-cylinders.add(createMesh(cylinderGeometry, material, 4.2, 1, 0, 'Cylinder B', 0));
-cylinders.add(createMesh(cylinderGeometry, material, 3.6, 3, 0, 'Cylinder C', 0));
+cylinders.add(createMesh(cylinderGeometry, baseMat, 3,   1, 0, 'Cylinder A', 0));
+cylinders.add(createMesh(cylinderGeometry, baseMat, 4.2, 1, 0, 'Cylinder B', 0));
+cylinders.add(createMesh(cylinderGeometry, baseMat, 3.6, 3, 0, 'Cylinder C', 0));
 scene.add(cylinders);
 
 const boxes = new THREE.Group();
-boxes.add(createMesh(boxGeometry, material, -1, 1, 0, 'Box A', 0));
-boxes.add(createMesh(boxGeometry, material, -4, 1, 0, 'Box B', 0));
-boxes.add(createMesh(boxGeometry, material, -2.5, 3, 0, 'Box C', 0));
+boxes.add(createMesh(boxGeometry, baseMat, -1,  1, 0, 'Box A', 0));
+boxes.add(createMesh(boxGeometry, baseMat, -4,  1, 0, 'Box B', 0));
+boxes.add(createMesh(boxGeometry, baseMat, -2.5,3, 0, 'Box C', 0));
 scene.add(boxes);
 
-// ------------------------------------
-// XR "Orbit" nav state
-// ------------------------------------
-const target = new THREE.Vector3(-1, 2, 0);  // same as controls.target
-let radius = 12;                              // dolly distance
-let theta = Math.atan2(camera.position.x - target.x, camera.position.z - target.z); // around Y
-let phi = Math.acos(
-  THREE.MathUtils.clamp(
-    (camera.position.y - target.y) / new THREE.Vector3().subVectors(camera.position, target).length(),
-    -1, 1
-  )
-); // up/down
-const spherical = new THREE.Spherical(radius, phi, theta);
+// ---------- XR Orbit-style nav state ----------
+const target = new THREE.Vector3(-1, 2, 0);      // pivot point
+let spherical = new THREE.Spherical();           // radius, phi, theta
 
-const XR_NAV = {
-  orbitSpeed: 1.4,    // radians/sec with thumbstick or hand-drag
-  dollySpeed: 3.0,    // meters/sec (closer/farther)
-  minRadius: 2.0,
-  maxRadius: 50.0,
-  minPhi: 0.01,
-  maxPhi: Math.PI - 0.01,
-};
-
-// helper to apply spherical to camera in XR
-function applySphericalToCamera() {
-  spherical.radius = THREE.MathUtils.clamp(spherical.radius, XR_NAV.minRadius, XR_NAV.maxRadius);
-  spherical.phi = THREE.MathUtils.clamp(spherical.phi, XR_NAV.minPhi, XR_NAV.maxPhi);
-  const pos = new THREE.Vector3().setFromSpherical(spherical).add(target);
-  camera.position.copy(pos);
-  camera.lookAt(target);
-}
-
-// initialize spherical from current camera
-(function syncSphericalFromCamera() {
+// initialize spherical from current desktop camera
+(function syncSpherical() {
   const offset = new THREE.Vector3().subVectors(camera.position, target);
   spherical.setFromVector3(offset);
 })();
 
-// ------------------------------------
-// Controllers (for XR)
-// ------------------------------------
-const controllerModelFactory = new XRControllerModelFactory();
+const XR_NAV = {
+  orbitSpeed: 1.4,       // rad/s
+  dollySpeed:  3.0,      // m/s
+  minRadius:   1.5,
+  maxRadius:   50,
+  minPhi:      0.01,
+  maxPhi:      Math.PI - 0.01
+};
 
-const controllers = [0, 1].map((i) => {
+function applySphericalToRig() {
+  spherical.radius = THREE.MathUtils.clamp(spherical.radius, XR_NAV.minRadius, XR_NAV.maxRadius);
+  spherical.phi    = THREE.MathUtils.clamp(spherical.phi, XR_NAV.minPhi, XR_NAV.maxPhi);
+  const pos = new THREE.Vector3().setFromSpherical(spherical).add(target);
+  // In XR, move the rig (not the camera). The headset adds head offset inside the rig.
+  rig.position.copy(pos);
+
+  // Optional: orient rig roughly toward target so controllers feel aligned
+  rig.lookAt(target);
+}
+
+// ---------- Controllers & hands ----------
+const controllerModelFactory = new XRControllerModelFactory();
+const controllers = [0,1].map((i) => {
   const ctrl = renderer.xr.getController(i);
+  ctrl.addEventListener('select', () => raycastFromController(ctrl));
   scene.add(ctrl);
 
   const grip = renderer.xr.getControllerGrip(i);
   grip.add(controllerModelFactory.createControllerModel(grip));
   scene.add(grip);
 
-  // XR "select" to do raycast pick
-  ctrl.addEventListener('selectstart', () => (ctrl.userData.selecting = true));
-  ctrl.addEventListener('selectend', () => (ctrl.userData.selecting = false));
-
   return { ctrl, grip };
 });
 
-// Optional hands (for hand-tracking orbit)
-const hands = [0, 1].map((i) => {
-  const hand = renderer.xr.getHand(i);
-  hand.userData.isPinching = false;
-  hand.addEventListener('pinchstart', () => (hand.userData.isPinching = true));
-  hand.addEventListener('pinchend', () => (hand.userData.isPinching = false));
-  scene.add(hand);
-  return hand;
+const hands = [0,1].map((i) => {
+  const h = renderer.xr.getHand(i);
+  h.userData.isPinching = false;
+  h.addEventListener('pinchstart', () => (h.userData.isPinching = true));
+  h.addEventListener('pinchend',   () => (h.userData.isPinching = false));
+  scene.add(h);
+  return h;
 });
 
-// ------------------------------------
-// Raycasting (desktop + XR select)
-// ------------------------------------
+// ---------- Raycasting (desktop + XR) ----------
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
-document.addEventListener('mousedown', onMouseDown);
-
-function onMouseDown(event) {
+document.addEventListener('mousedown', (event) => {
   const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
+  mouse.x = ((event.clientX - rect.left) / rect.width)  * 2 - 1;
+  mouse.y = -((event.clientY - rect.top)  / rect.height) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
   const hits = raycaster.intersectObjects(scene.children, true);
-  if (hits.length) {
-    const obj = hits[0].object;
-    if (obj.material && obj.material.color) obj.material.color.setRGB(Math.random(), Math.random(), Math.random());
-    console.log(`${obj.name || '(unnamed)'} clicked`);
-  }
-}
+  if (hits.length) hits[0].object.material.color.setRGB(Math.random(),Math.random(),Math.random());
+});
 
-// XR select ray from controller
 function raycastFromController(ctrl) {
-  const rayOrigin = new THREE.Vector3();
-  const rayDir = new THREE.Vector3(0, 0, -1);
-  ctrl.matrixWorld.decompose(rayOrigin, new THREE.Quaternion(), new THREE.Vector3());
-  rayDir.applyQuaternion(ctrl.quaternion);
-  raycaster.set(rayOrigin, rayDir.normalize());
-
+  const origin = new THREE.Vector3();
+  const quat   = new THREE.Quaternion();
+  const dir    = new THREE.Vector3(0,0,-1);
+  ctrl.matrixWorld.decompose(origin, quat, new THREE.Vector3());
+  dir.applyQuaternion(quat).normalize();
+  raycaster.set(origin, dir);
   const hits = raycaster.intersectObjects(scene.children, true);
-  if (hits.length) {
-    const obj = hits[0].object;
-    if (obj.material && obj.material.color) obj.material.color.setRGB(Math.random(), Math.random(), Math.random());
-    console.log(`[XR] ${obj.name || '(unnamed)'} selected`);
-  }
+  if (hits.length) hits[0].object.material.color.setRGB(Math.random(),Math.random(),Math.random());
 }
 
-// ------------------------------------
-// XR Orbit logic (controllers + hands)
-// ------------------------------------
+// ---------- XR input → orbit/dolly ----------
 function updateXROrbit(dt) {
   const session = renderer.xr.getSession?.();
   if (!session) return;
 
-  // Controllers with XRStandardGamepad (Quest)
-  renderer.xr.getSession().inputSources.forEach((src) => {
+  // Gamepad (Quest) — try both stick mappings
+  session.inputSources.forEach((src) => {
     const gp = src.gamepad;
     if (!gp) return;
 
-    // Try both stick mappings
-    const lx = gp.axes[2] ?? gp.axes[0] ?? 0; // left-right
-    const ly = gp.axes[3] ?? gp.axes[1] ?? 0; // up-down
+    // prefer left stick on axes[2,3]; fallback to [0,1]
+    const lx = (gp.axes[2] ?? gp.axes[0] ?? 0);
+    const ly = (gp.axes[3] ?? gp.axes[1] ?? 0);
 
-    // Orbit around target: left-right rotates theta, up-down changes phi
     const orbitScale = XR_NAV.orbitSpeed * dt;
-    spherical.theta -= lx * orbitScale;        // rotate around Y
+    spherical.theta -= lx * orbitScale;        // yaw
     spherical.phi   -= ly * orbitScale * 0.8;  // pitch
 
-    // Dolly on secondary stick Y if available
-    const dy = gp.axes[1] ?? 0;
-    spherical.radius += -dy * XR_NAV.dollySpeed * dt * 0.5;
+    // Use right stick Y if present for dolly (fallback to same stick if not)
+    const ry = (gp.axes[1] ?? 0);
+    spherical.radius += -ry * XR_NAV.dollySpeed * dt * 0.6;
+  });
 
-    // Trigger "select" raycast
-    if (src && src.handedness && gp.buttons?.[0]?.pressed) {
-      const idx = src.handedness === 'left' ? 0 : 1;
-      if (controllers[idx]) {
-        raycastFromController(controllers[idx].ctrl);
-      }
+  // Hand-tracking (pinch + move)
+  const left = hands[0], right = hands[1];
+  const leftPinch  = left?.userData.isPinching;
+  const rightPinch = right?.userData.isPinching;
+
+  [left, right].forEach((h) => {
+    if (!h) return;
+    h.userData.lastPos = h.userData.lastPos || new THREE.Vector3();
+    h.userData.currPos = h.userData.currPos || new THREE.Vector3();
+    h.getWorldPosition(h.userData.currPos);
+    if (!h.userData.init) {
+      h.userData.lastPos.copy(h.userData.currPos);
+      h.userData.init = true;
     }
   });
 
-  // Hand-tracking (AVP, Quest hands)
-  const leftPinch = hands[0]?.userData.isPinching;
-  const rightPinch = hands[1]?.userData.isPinching;
-
-  // store last hand pose to compute deltas
-  hands.forEach((hand, i) => {
-    if (!hand) return;
-    hand.userData.lastPos = hand.userData.lastPos || new THREE.Vector3();
-    hand.getWorldPosition(hand.userData.currentPos || (hand.userData.currentPos = new THREE.Vector3()));
-    if (!hand.userData.hadFirst) {
-      hand.userData.lastPos.copy(hand.userData.currentPos);
-      hand.userData.hadFirst = true;
-    }
-  });
-
-  // Single-hand pinch = orbit (based on hand movement)
+  // One-hand pinch = orbit
   if (leftPinch ^ rightPinch) {
-    const i = leftPinch ? 0 : 1;
-    const hand = hands[i];
-    if (hand) {
-      hand.getWorldPosition(hand.userData.currentPos);
-      const delta = new THREE.Vector3().subVectors(hand.userData.currentPos, hand.userData.lastPos);
-      // Map world-space lateral movement to orbit deltas
-      spherical.theta -= delta.x * 1.2;       // horizontal moves rotate around Y
-      spherical.phi   -= delta.y * 1.2;       // vertical moves pitch
-      hand.userData.lastPos.copy(hand.userData.currentPos);
-    }
+    const h = leftPinch ? left : right;
+    const delta = new THREE.Vector3().subVectors(h.userData.currPos, h.userData.lastPos);
+    spherical.theta -= delta.x * 1.2;
+    spherical.phi   -= delta.y * 1.2;
+    h.userData.lastPos.copy(h.userData.currPos);
   }
 
-  // Both hands pinching = dolly (move both hands forward/back)
+  // Two-hand pinch = dolly (push/pull)
   if (leftPinch && rightPinch) {
-    const lp = hands[0].userData.currentPos, rp = hands[1].userData.currentPos;
-    const lastL = hands[0].userData.lastPos, lastR = hands[1].userData.lastPos;
-    const avg = new THREE.Vector3().addVectors(lp, rp).multiplyScalar(0.5);
-    const lastAvg = new THREE.Vector3().addVectors(lastL, lastR).multiplyScalar(0.5);
-    const dz = avg.z - lastAvg.z; // push/pull
-    spherical.radius += dz * 10.0; // scale to feel right
-    hands[0].userData.lastPos.copy(lp);
-    hands[1].userData.lastPos.copy(rp);
+    const avg     = new THREE.Vector3().addVectors(left.userData.currPos, right.userData.currPos).multiplyScalar(0.5);
+    const lastAvg = new THREE.Vector3().addVectors(left.userData.lastPos, right.userData.lastPos).multiplyScalar(0.5);
+    spherical.radius += (avg.z - lastAvg.z) * 10.0;
+    left.userData.lastPos.copy(left.userData.currPos);
+    right.userData.lastPos.copy(right.userData.currPos);
   }
 
-  applySphericalToCamera();
+  applySphericalToRig();
 }
 
-// ------------------------------------
-// Rendering
-// ------------------------------------
-function animateDesktop() {
-  requestAnimationFrame(animateDesktop);
-  controls.update();
-  renderer.render(scene, camera);
-}
+// ---------- Render loop ----------
+let lastT = performance.now();
+renderer.setAnimationLoop(() => {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
 
-// XR + Desktop in one loop
-renderer.setAnimationLoop((t, frame) => {
   if (renderer.xr.isPresenting) {
-    const dt = Math.min(0.05, renderer.xr.getFrame?.().deltaTime ? renderer.xr.getFrame().deltaTime / 1000 : 1 / 60);
-    updateXROrbit(dt || 1/60);
+    // XR mode: use orbital rig logic
+    updateXROrbit(dt);
     renderer.render(scene, camera);
   } else {
+    // Desktop: classic OrbitControls
     controls.update();
     renderer.render(scene, camera);
   }
 });
 
-// ------------------------------------
-// Resize
-// ------------------------------------
+// ---------- Resize ----------
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
