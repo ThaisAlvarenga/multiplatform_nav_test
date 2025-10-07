@@ -1,176 +1,115 @@
 // --- CDN imports (works on GitHub Pages) ---
 import * as THREE from 'https://unpkg.com/three@0.165.0/build/three.module.js';
 import { OrbitControls } from 'https://unpkg.com/three@0.165.0/examples/jsm/controls/OrbitControls.js';
-import { XRButton } from 'https://unpkg.com/three@0.165.0/examples/jsm/webxr/XRButton.js';
+import { VRButton } from 'https://unpkg.com/three@0.165.0/examples/jsm/webxr/VRButton.js';
 import { XRControllerModelFactory } from 'https://unpkg.com/three@0.165.0/examples/jsm/webxr/XRControllerModelFactory.js';
 
-// ---------- renderer / scene / camera ----------
+// --------- Renderer (enable WebXR) ---------
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(devicePixelRatio);
 renderer.setClearColor(0x222230);
+renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.xr.enabled = true;
-document.body.style.margin = '0';
+renderer.xr.enabled = true; // <— WebXR on
 document.body.appendChild(renderer.domElement);
+document.body.appendChild(VRButton.createButton(renderer)); // <— VR button
 
-// Critical so OrbitControls receives pointer/touch:
-renderer.domElement.style.display = 'block';
-renderer.domElement.style.touchAction = 'none'; // mobile Safari/Chrome
-renderer.domElement.tabIndex = 0;               // keyboard focus if needed
-
+// --------- Scene ---------
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 1000);
 
-// Desktop OrbitControls
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.rotateSpeed = 0.9;
-controls.zoomSpeed = 1.0;
-controls.panSpeed = 0.8;
-
-// World + initial camera
+// Lighting
+const light = new THREE.DirectionalLight(0xffffff, 2);
+light.position.set(2, 5, 10);
+light.castShadow = true;
+scene.add(light);
 scene.add(new THREE.AmbientLight(0xffffff, 0.1));
-const sun = new THREE.DirectionalLight(0xffffff, 2);
-sun.position.set(2,5,10);
-sun.castShadow = true;
-scene.add(sun);
 
-const floor = new THREE.Mesh(
-  new THREE.PlaneGeometry(25, 20),
-  new THREE.MeshLambertMaterial({ color: 0xffffff })
-);
-floor.rotation.x = -Math.PI/2;
-floor.receiveShadow = true;
-scene.add(floor);
+// --------- Camera ---------
+// In VR, pose/FOV/aspect come from the VR system. We set a reasonable standing height for non-VR.
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 1.6, 0); // ~1.6m standing height
 
-const mat = new THREE.MeshLambertMaterial();
-const cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.5,2), mat.clone());
-cyl.position.set(3,1,0);
-scene.add(cyl);
-
-const box = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), mat.clone());
-box.position.set(-1,1,0);
-scene.add(box);
-
-// Set the same target you like for orbiting
-const target = new THREE.Vector3(-1, 2, 0);
-controls.target.copy(target);
-camera.position.set(-5, 5, 12);
+// Desktop navigation (disabled by the VR runtime when in XR)
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.6, -2);
 controls.update();
 
-// XR button
-document.body.appendChild(XRButton.createButton(renderer, {
-  requiredFeatures: ['local-floor'],
-  optionalFeatures: ['hand-tracking'],
-}));
+// --------- World geometry (meters) ---------
+const floorGeometry = new THREE.PlaneGeometry(25, 20);
+const floorMesh = new THREE.Mesh(
+  floorGeometry,
+  new THREE.MeshLambertMaterial({ color: 0xffffff })
+);
+floorMesh.rotation.x = -Math.PI / 2;
+floorMesh.name = 'Floor';
+floorMesh.receiveShadow = true;
+scene.add(floorMesh);
 
-// ---------- XR orbit via rig ----------
-const rig = new THREE.Group();
-scene.add(rig);
+const boxGeometry = new THREE.BoxGeometry(1, 1, 1);         // 1m cubes (VR uses meters)
+const cylinderGeometry = new THREE.CylinderGeometry(0.5, 0.5, 1.0); // 1m tall cylinder
+const material = new THREE.MeshLambertMaterial();
 
-let spherical = new THREE.Spherical(); // radius, phi, theta
-
-function syncSphericalFromCameraWorld() {
-  const camWorld = new THREE.Vector3();
-  camera.getWorldPosition(camWorld);
-  const offset = camWorld.sub(target);
-  spherical.setFromVector3(offset);
+function createMesh(geometry, material, x, y, z, name, layer) {
+  const mesh = new THREE.Mesh(geometry, material.clone());
+  mesh.position.set(x, y, z);
+  mesh.name = name;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.layers.set(layer);
+  return mesh;
 }
 
-const XR_NAV = {
-  orbitSpeed: 1.4,  // rad/s
-  dollySpeed: 3.0,  // m/s
-  minRadius: 1.5, maxRadius: 50,
-  minPhi: 0.01, maxPhi: Math.PI - 0.01
-};
+// Place things ~2m in front of the camera centerline at user eye-height
+const cylinders = new THREE.Group();
+cylinders.add(createMesh(cylinderGeometry, material,  0.8, 1.6, -2, 'Cylinder A', 0));
+cylinders.add(createMesh(cylinderGeometry, material,  2.0, 1.6, -2, 'Cylinder B', 0));
+cylinders.add(createMesh(cylinderGeometry, material,  1.4, 2.6, -2, 'Cylinder C', 0));
+scene.add(cylinders);
 
-function applySphericalToRig() {
-  spherical.radius = THREE.MathUtils.clamp(spherical.radius, XR_NAV.minRadius, XR_NAV.maxRadius);
-  spherical.phi    = THREE.MathUtils.clamp(spherical.phi, XR_NAV.minPhi, XR_NAV.maxPhi);
-  const pos = new THREE.Vector3().setFromSpherical(spherical).add(target);
-  rig.position.copy(pos);
-  rig.lookAt(target);
+const boxes = new THREE.Group();
+boxes.add(createMesh(boxGeometry, material, -0.5, 1.6, -2, 'Box A', 0));
+boxes.add(createMesh(boxGeometry, material, -3.0, 1.6, -2, 'Box B', 0));
+boxes.add(createMesh(boxGeometry, material, -1.8, 2.6, -2, 'Box C', 0));
+scene.add(boxes);
+
+// --------- Render loop (WebXR-friendly) ---------
+function render(time) {
+  // time *= 0.001; // use if you animate by time
+
+  // Keep desktop controls smooth when not in VR
+  if (!renderer.xr.isPresenting) controls.update();
+
+  renderer.render(scene, camera);
 }
 
-// Re-parent camera ONLY while in XR
-renderer.xr.addEventListener('sessionstart', () => {
-  rig.add(camera);
-  syncSphericalFromCameraWorld();     // start XR orbit from current view
-  controls.enabled = false;           // avoid fighting inputs
-});
+renderer.setAnimationLoop(render); // <— Let three.js drive the loop (needed for VR)
 
-renderer.xr.addEventListener('sessionend', () => {
-  scene.add(camera);                  // back to desktop
-  controls.enabled = true;
-  controls.update();
-});
-
-// ---------- Controllers (optional visual models) ----------
-const controllerModelFactory = new XRControllerModelFactory();
-for (let i=0;i<2;i++){
-  const grip = renderer.xr.getControllerGrip(i);
-  grip.add(controllerModelFactory.createControllerModel(grip));
-  scene.add(grip);
-}
-
-// ---------- XR input → orbit/dolly ----------
-function updateXROrbit(dt) {
-  const session = renderer.xr.getSession?.();
-  if (!session) return;
-
-  session.inputSources.forEach((src) => {
-    const gp = src.gamepad;
-    if (!gp) return;
-
-    // robust axis pick (works on most headsets)
-    const x = gp.axes[2] ?? gp.axes[0] ?? 0;
-    const y = gp.axes[3] ?? gp.axes[1] ?? 0;
-
-    const orbitScale = XR_NAV.orbitSpeed * dt;
-    if (Math.abs(x) > 0.05) spherical.theta -= x * orbitScale;        // yaw
-    if (Math.abs(y) > 0.05) spherical.phi   -= y * orbitScale * 0.8;  // pitch
-
-    // use the other stick Y (or same if only one) for dolly
-    const ry = gp.axes[1] ?? 0;
-    if (Math.abs(ry) > 0.05) spherical.radius += -ry * XR_NAV.dollySpeed * dt * 0.6;
-  });
-
-  applySphericalToRig();
-}
-
-// ---------- Raycasting (desktop click example) ----------
-const raycaster = new THREE.Raycaster();
-const mouse = new THREE.Vector2();
-renderer.domElement.addEventListener('mousedown', (e) => {
-  const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x = ((e.clientX - rect.left)/rect.width) * 2 - 1;
-  mouse.y = -((e.clientY - rect.top)/rect.height) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
-  // const hits = raycaster.intersectObjects(scene.children, true);
-  // if (hits.length) hits[0].object.material.color.setRGB(Math.random(),Math.random(),Math.random());
-}, { passive:false });
-
-// ---------- Render loop ----------
-let last = performance.now();
-renderer.setAnimationLoop((t) => {
-  const now = performance.now();
-  const dt = Math.min(0.05, (now - last)/1000);
-  last = now;
-
-  if (renderer.xr.isPresenting) {
-    updateXROrbit(dt);
-    renderer.render(scene, camera);
-  } else {
-    controls.update();
-    renderer.render(scene, camera);
-  }
-});
-
-// ---------- Resize ----------
-addEventListener('resize', () => {
-  camera.aspect = innerWidth/innerHeight;
+// --------- Resize handling ---------
+window.addEventListener('resize', () => {
+  // In VR, projection is managed by the runtime; this is for desktop mode.
+  camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
+  renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+// ========= RAYCASTING (desktop click) =========
+const raycaster = new THREE.Raycaster();
+
+document.addEventListener('mousedown', onMouseDown);
+
+function onMouseDown(event) {
+  const coords = new THREE.Vector2(
+    (event.clientX / renderer.domElement.clientWidth) * 2 - 1,
+    -((event.clientY / renderer.domElement.clientHeight) * 2 - 1),
+  );
+
+  raycaster.setFromCamera(coords, camera);
+
+  const intersections = raycaster.intersectObjects(scene.children, true);
+  if (intersections.length > 0) {
+    const selectedObject = intersections[0].object;
+    if (selectedObject.material?.color) {
+      selectedObject.material.color = new THREE.Color(Math.random(), Math.random(), Math.random());
+    }
+    console.log(`${selectedObject.name} was clicked!`);
+  }
+}
