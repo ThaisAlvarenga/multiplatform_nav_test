@@ -9,7 +9,10 @@ const renderer = new THREE.WebGLRenderer();
 renderer.setClearColor(0x222230);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
+renderer.xr.enabled = true; // <— WebXR on
 document.body.appendChild(renderer.domElement);
+document.body.appendChild(VRButton.createButton(renderer)); // <— VR button
+
 
 // Create a new scene
 const scene = new THREE.Scene();
